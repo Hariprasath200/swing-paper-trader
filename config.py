@@ -7,7 +7,7 @@ START_CAPITAL = 100000.0     # virtual money (INR); large so cash never blocks a
 TRADE_AMOUNT = 10000.0       # fixed rupees per trade -> quantity = TRADE_AMOUNT // entry price
 TARGET_TRADES = 100          # completed trades before you judge the system
 PRICE_SPLIT = 500            # LOW track < 500 <= HIGH track
-
+LOCAL_RUN_BUTTON = False
 # ---- screening filters (edit these when the Lessons tab suggests it) -
 MIN_PRICE = 50
 MIN_AVG_TURNOVER = 5e7       # Rs 5 crore/day traded

@@ -92,7 +92,7 @@ def show_table(df, money_cols=(), price_cols=(), pct_cols=()):
 # ---------------- data ----------------
 with st.sidebar:
     st.markdown("### Controls")
-    if st.button("Run update + scan now", type="primary"):
+    if LOCAL_RUN_BUTTON and st.button("Run update + scan now", type="primary"):
         with st.spinner("Scanning the market (a few minutes)..."):
             r = subprocess.run([sys.executable, "run_daily.py"], capture_output=True, text=True, cwd=BASE)
         st.code((r.stdout + r.stderr)[-1200:])
