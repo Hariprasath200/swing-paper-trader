@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS trades(
   features TEXT, rationale TEXT, failure_tags TEXT, post_mortem TEXT);
 CREATE TABLE IF NOT EXISTS equity(
   date TEXT PRIMARY KEY, equity REAL, realized REAL, unrealized REAL);
+CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS scans(
   date TEXT PRIMARY KEY, regime TEXT, candidates TEXT, picks TEXT);
 """

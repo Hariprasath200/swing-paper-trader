@@ -92,7 +92,7 @@ def show_table(df, money_cols=(), price_cols=(), pct_cols=()):
 # ---------------- data ----------------
 with st.sidebar:
     st.markdown("### Controls")
-    if LOCAL_RUN_BUTTON and st.button("Run update + scan now", type="primary"):
+    if globals().get("LOCAL_RUN_BUTTON", False) and st.button("Run update + scan now", type="primary"):
         with st.spinner("Scanning the market (a few minutes)..."):
             r = subprocess.run([sys.executable, "run_daily.py"], capture_output=True, text=True, cwd=BASE)
         st.code((r.stdout + r.stderr)[-1200:])
@@ -136,8 +136,10 @@ pill = (f'<span class="pill" style="background:{GREEN}26;color:{GREEN}">● MARK
         else f'<span class="pill" style="background:{RED}26;color:{RED}">● MARKET WEAK (no new trades)</span>' if regime
         else f'<span class="pill" style="background:{GREY}33;color:#cbd5e1">● NO SCAN YET</span>')
 last = scans.iloc[0].date if len(scans) else "–"
+meta = {r[0]: r[1] for r in pd.read_sql("SELECT key, value FROM meta", c).values}
+upd = meta.get("last_update", "–")
 st.markdown(f'<div class="hero"><h1>SwingLab · NSE Paper Trader</h1><p>Finds 3 swing-trade ideas every day, '
-            f'paper-trades them with fake money, and learns from every failure. Last scan: <b>{last}</b> &nbsp; {pill}</p></div>',
+            f'paper-trades them with fake money, and learns from every failure. Last scan: <b>{last}</b> · Positions updated: <b>{upd}</b> &nbsp; {pill}</p></div>',
             unsafe_allow_html=True)
 
 with st.expander("How to read this dashboard (30 seconds)"):

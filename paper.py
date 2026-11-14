@@ -24,9 +24,11 @@ def add_pending(p, asof):
                   (p["track"], p["symbol"], "PENDING", asof, p["entry"], p["stop"], p["target"],
                    p["qty"], json.dumps(p["features"]), p["rationale"]))
 
-def simulate(t, bars):
+def simulate(t, bars, live_date=None):
     """Replay daily bars from scratch (idempotent). If stop and target both sit inside one
-    candle, the stop is assumed to hit first (conservative)."""
+    candle, the stop is assumed to hit first (conservative).
+    live_date: today's still-forming bar. Price touches (fill/stop/target) count on it, but
+    day-based events (expiry, 15-day timeout) wait for the finished candle."""
     status, entry, stop, target = "PENDING", t["plan_entry"], t["stop"], t["target"]
     entry_date = exit_date = exit_price = reason = None
     pend = held = 0
@@ -36,11 +38,14 @@ def simulate(t, bars):
         if d <= t["created_date"]:
             continue
         o, h, l, cl = (float(b.Open), float(b.High), float(b.Low), float(b.Close))
+        partial = (d == live_date)
         last, filled_now = cl, False
         if status == "PENDING":
             if l <= entry:
                 entry, status, entry_date, filled_now = min(entry, o), "OPEN", d, True
                 hi, lo = entry, min(entry, l)
+            elif partial:
+                continue
             else:
                 pend += 1
                 if pend >= PENDING_DAYS:
@@ -54,7 +59,7 @@ def simulate(t, bars):
         elif l <= stop:                       exit_price, reason = stop, "STOP"
         elif not filled_now and o >= target:  exit_price, reason = o, "TARGET_GAP"
         elif h >= target:                     exit_price, reason = target, "TARGET"
-        elif held >= MAX_HOLD_DAYS:           exit_price, reason = cl, "TIMEOUT"
+        elif held >= MAX_HOLD_DAYS and not partial: exit_price, reason = cl, "TIMEOUT"
         if reason:
             status, exit_date = "CLOSED", d
             break
@@ -77,7 +82,7 @@ def _nifty_ret(n, d0, d1):
     except Exception:
         return None
 
-def update_positions(asof):
+def update_positions(asof, live_date=None):
     with conn() as c:
         rows = [dict(r) for r in c.execute("SELECT * FROM trades WHERE status IN ('PENDING','OPEN')")]
         nifty = None
@@ -85,7 +90,7 @@ def update_positions(asof):
             start = min(r["created_date"] for r in rows)
             nifty = _flat(yf.download("^NSEI", start=start, progress=False, auto_adjust=True)).dropna().Close
         for t in rows:
-            u = simulate(t, _bars(t["symbol"], t["created_date"]))
+            u = simulate(t, _bars(t["symbol"], t["created_date"]), live_date)
             u.update(nifty_ret_pct=None, failure_tags=None, post_mortem=None, id=t["id"])
             if u["status"] == "CLOSED":
                 u["nifty_ret_pct"] = _nifty_ret(nifty, u["entry_date"], u["exit_date"])
