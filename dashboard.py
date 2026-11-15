@@ -4,6 +4,7 @@ import numpy as np, pandas as pd, streamlit as st
 import plotly.graph_objects as go, plotly.express as px, yfinance as yf
 from config import *
 from db import conn
+from timeline import buy_window, sell_by, dfmt, dshort
 
 st.set_page_config("SwingLab | NSE Paper Trader", page_icon="📈", layout="wide")
 
@@ -35,6 +36,11 @@ header[data-testid="stHeader"]{{background:transparent}}
 .chip{{display:inline-block;padding:2px 10px;border-radius:999px;font-size:.68rem;font-weight:700;letter-spacing:.04em;vertical-align:middle}}
 .muted{{color:#94a3b8;font-size:.82rem}}
 .pill{{display:inline-block;padding:4px 12px;border-radius:999px;font-weight:700;font-size:.78rem}}
+.steps{{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:8px;margin:8px 0 12px}}
+.step{{background:#0B1020aa;border:1px solid #ffffff10;border-top:3px solid var(--sc);border-radius:12px;padding:10px 12px}}
+.step .n{{font-size:.62rem;letter-spacing:.1em;color:var(--sc);font-weight:700}}
+.step .d{{font-weight:700;font-size:.92rem;margin:3px 0}}
+.step .x{{font-size:.74rem;color:#94a3b8;line-height:1.35}}
 .stTabs [data-baseweb="tab-list"]{{gap:6px}}
 .stTabs [data-baseweb="tab"]{{background:#111832;border-radius:10px 10px 0 0;padding:8px 16px}}
 .stTabs [aria-selected="true"]{{background:linear-gradient(90deg,#22D3EE33,#A78BFA33)}}
@@ -121,6 +127,8 @@ c = conn()
 trades = pd.read_sql("SELECT * FROM trades ORDER BY id DESC", c)
 eq = pd.read_sql("SELECT * FROM equity ORDER BY date", c)
 scans = pd.read_sql("SELECT * FROM scans ORDER BY date DESC", c)
+ev = pd.read_sql("SELECT * FROM events ORDER BY ts", c)
+snaps = pd.read_sql("SELECT * FROM snapshots ORDER BY ts", c)
 for col in ["pnl", "entry", "last_price", "mfe_pct", "mae_pct", "days_held"]:
     trades[col] = pd.to_numeric(trades[col], errors="coerce")
 done = trades[trades.outcome.notna()].copy()
@@ -210,7 +218,107 @@ with st.expander("Readiness check before using real money"):
     st.caption(f"With reward:risk of {rr:.1f}, a hit rate above ~{breakeven:.0f}% already breaks even. "
                "A 90% hit rate is not required to profit. Profit and drawdown matter more than hit rate alone.")
 
-t0, t1, t2, t3, t4, t5, t6 = st.tabs(["Today's 3 picks", "Tracks", "Positions", "History", "Failure analysis", "Lessons", "Trade detail"])
+
+def has(x):
+    return x is not None and not (isinstance(x, float) and np.isnan(x))
+
+REASON = {"TARGET": "Target hit", "TARGET_GAP": "Gapped up past target", "STOP": "Stop hit",
+          "STOP_GAP": "Gapped below stop", "TIMEOUT": f"{MAX_HOLD_DAYS}-session limit reached"}
+
+def seen(tid, kinds):
+    m = ev[(ev.trade_id == tid) & (ev.kind.isin(kinds))]
+    r = fmt_ts(m.iloc[0].ts) if len(m) else None
+    return f"<br>seen {r[0]}" if r else ""
+
+def step(n, color, title, date, extra):
+    return (f'<div class="step" style="--sc:{color}"><div class="n">{n} · {title}</div>'
+            f'<div class="d">{date}</div><div class="x">{extra}</div></div>')
+
+def steps_html(r):
+    tid, st_ = r["id"], r["status"]
+    ws, we = buy_window(r["created_date"])
+    bought = has(r["entry_date"])
+    dh = int(r["days_held"]) if has(r["days_held"]) else 0
+    qty, tgt, stp, pe = r["qty"], r["target"], r["stop"], r["plan_entry"]
+    s1 = step(1, GREEN, "PICKED", dfmt(r["created_date"]), "After market close" + seen(tid, ["PICKED"]))
+    if bought:
+        s2 = step(2, GREEN, "BUY WINDOW", f"{dshort(ws)} → {dshort(we)}", f"Limit ₹{pe:,.2f}<br>filled {dshort(r['entry_date'])}")
+        s3 = step(3, GREEN, "BOUGHT", dfmt(r["entry_date"]), f"₹{r['entry']:,.2f} × {qty} = ₹{r['entry'] * qty:,.0f}" + seen(tid, ["FILLED"]))
+        sb = sell_by(r["entry_date"])
+        if st_ == "OPEN":
+            s4 = step(4, CYAN, "SELL BY", dfmt(sb), f"Close of session {MAX_HOLD_DAYS}<br>Day {dh} of {MAX_HOLD_DAYS} · {max(MAX_HOLD_DAYS - dh, 0)} left")
+        else:
+            s4 = step(4, GREY, "SELL BY", dfmt(sb), f"Deadline (closed after {dh} session{'s' if dh != 1 else ''})")
+    elif st_ == "EXPIRED":
+        s2 = step(2, GREY, "BUY WINDOW", f"{dshort(ws)} → {dshort(we)}", f"Not filled, cancelled {dshort(r['exit_date'])}" + seen(tid, ["EXPIRED"]))
+        s3 = step(3, GREY, "BOUGHT", "Never bought", "No money used, no loss")
+        s4 = step(4, GREY, "SELL BY", "–", "Not applicable")
+    else:
+        s2 = step(2, AMBER, "BUY WINDOW", f"{dshort(ws)} → {dshort(we)}", f"Buys when price falls to ₹{pe:,.2f}<br>(cancelled after {dshort(we)})")
+        s3 = step(3, GREY, "BOUGHT", "Not yet", "Waiting for the buy limit")
+        s4 = step(4, GREY, "SELL BY", f"≈ {dshort(sell_by(ws))} at the earliest", f"{MAX_HOLD_DAYS} sessions after the buy day")
+    if st_ == "CLOSED":
+        ok_ = r["outcome"] == "SUCCESS"
+        s5 = step(5, GREEN if ok_ else RED, "SOLD", dfmt(r["exit_date"]),
+                  f"₹{r['exit_price']:,.2f} · {REASON.get(r['exit_reason'], r['exit_reason'])}<br>P&L {money(r['pnl'], True)}"
+                  + seen(tid, ["TARGET", "TARGET_GAP", "STOP", "STOP_GAP", "TIMEOUT"]))
+    else:
+        s5 = step(5, GREY, "SELL TRIGGER", "Target or stop", f"Target ₹{tgt:,.2f} · Stop ₹{stp:,.2f}<br>or the {MAX_HOLD_DAYS}-session limit")
+    return '<div class="steps">' + s1 + s2 + s3 + s4 + s5 + '</div>'
+
+def summary(df):
+    rows = []
+    for _, r in df.iterrows():
+        r = r.to_dict()
+        ws, we = buy_window(r["created_date"])
+        bought = has(r["entry_date"])
+        pl = r["pnl"] if has(r["pnl"]) else ((r["last_price"] - r["entry"]) * r["qty"] if r["status"] == "OPEN" and has(r["last_price"]) else np.nan)
+        rows.append({"Stock": r["symbol"], "Track": r["track"], "Status": status_of(r)[0],
+                     "Picked": dshort(r["created_date"]), "Buy window": f"{dshort(ws)} → {dshort(we)}",
+                     "Bought": dshort(r["entry_date"]) if bought else "–", "Buy ₹": r["entry"] if bought else np.nan,
+                     "Sell by": dshort(sell_by(r["entry_date"])) if bought else "–",
+                     "Sold": dshort(r["exit_date"]) if r["status"] == "CLOSED" else "–",
+                     "Sell ₹": r["exit_price"] if r["status"] == "CLOSED" else np.nan,
+                     "Sessions": f"{int(r['days_held']) if has(r['days_held']) else 0}/{MAX_HOLD_DAYS}", "P&L": pl})
+    return pd.DataFrame(rows)
+
+def render_card(r):
+    lab, _ = status_of(r)
+    tid = r["id"]
+    live = r["status"] in ("PENDING", "OPEN")
+    with st.expander(f"{r['symbol']} · {r['track']} · {lab} · picked {dshort(r['created_date'])}", expanded=live):
+        st.markdown(steps_html(r), unsafe_allow_html=True)
+        if r["status"] == "OPEN" and has(r["last_price"]):
+            cur, ent = r["last_price"], r["entry"]
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Current price", f"₹{cur:,.2f}")
+            m2.metric("Unrealized P&L", money((cur - ent) * r["qty"], True))
+            m3.metric("Move to target", f"{(r['target'] / cur - 1) * 100:+.1f}%")
+            m4.metric("Move to stop", f"{(r['stop'] / cur - 1) * 100:+.1f}%")
+            m5.metric("Sessions left", max(MAX_HOLD_DAYS - (int(r["days_held"]) if has(r["days_held"]) else 0), 0))
+        elif r["status"] == "PENDING" and has(r["last_price"]):
+            m1, m2 = st.columns(2)
+            m1.metric("Last price", f"₹{r['last_price']:,.2f}")
+            m2.metric("Needs to fall to buy limit", f"{(r['plan_entry'] / r['last_price'] - 1) * 100:+.1f}%")
+        sn = snaps[snaps.trade_id == tid]
+        if len(sn) >= 2:
+            fig = go.Figure(go.Scatter(x=sn.ts, y=sn.price, mode="lines+markers", line=dict(color=CYAN, width=2)))
+            for nm, y, cl in [("target", r["target"], GREEN), ("stop", r["stop"], RED), ("buy limit", r["plan_entry"], AMBER)]:
+                fig.add_hline(y=y, line_color=cl, line_dash="dash", annotation_text=nm)
+            fig.update_layout(title="Monitored price (one point per update)")
+            st.plotly_chart(style_fig(fig, 260), key=f"snap_{tid}")
+        te = ev[ev.trade_id == tid]
+        if len(te):
+            st.markdown("**Monitoring log**")
+            for _, e_ in te.iterrows():
+                f_ = fmt_ts(e_.ts)
+                st.markdown(f"- `{f_[0] if f_ else e_.ts}` **{e_.kind}**: {e_.note}")
+        else:
+            st.caption("Monitoring log starts from the first update after this feature was installed.")
+        if r.get("post_mortem"):
+            st.markdown(f"**Post-mortem:** {r['post_mortem']}")
+
+t0, tl, t1, t2, t3, t4, t5, t6 = st.tabs(["Today's 3 picks", "Stock timelines", "Tracks", "Positions", "History", "Failure analysis", "Lessons", "Trade detail"])
 
 # ---------------- Today ----------------
 with t0:
@@ -219,6 +327,7 @@ with t0:
     else:
         s = scans.iloc[0]
         picks = json.loads(s.picks)
+        ws0, we0 = buy_window(s.date)
         cols = st.columns(3)
         for col, tr in zip(cols, ["BEST", "LOW", "HIGH"]):
             p, cc = picks.get(tr, {}), TRACK_COL[tr]
@@ -239,12 +348,34 @@ with t0:
                     f'<div class="ladder" style="--e:{pos:.1f}%"><i></i></div>'
                     f'<div class="lad-l"><span style="color:{RED}">risk -{(e - st_) / e * 100:.1f}%</span>'
                     f'<span style="color:{GREEN}">reward +{(tg - e) / e * 100:.1f}%</span></div>'
-                    f'<div class="muted" style="margin-top:10px">{p["rationale"]}</div></div>')
+                    f'<div class="muted" style="margin-top:8px">Buy window: <b>{dshort(ws0)} → {dshort(we0)}</b> (cancelled if not filled)<br>'
+                    f'Sell by: <b>{MAX_HOLD_DAYS} sessions after buying</b> (≈ {dshort(sell_by(ws0))} if bought on {dshort(ws0)}), or at target/stop</div>'
+                    f'<div class="muted" style="margin-top:8px">{p["rationale"]}</div></div>')
             col.markdown(html, unsafe_allow_html=True)
         cands = json.loads(s.candidates)
         if cands:
             with st.expander(f"All {len(cands)} candidates that passed the filters on {s.date}"):
                 show_table(pd.DataFrame(cands), price_cols=["close", "sma20", "sma50", "atr", "support_10d"])
+
+# ---------------- Stock timelines ----------------
+with tl:
+    st.caption("Every picked stock: when to buy, when to sell, and what happened. Buy/sell dates come from daily candles, "
+               "so the exact minute of a fill isn't known. 'seen' is when an hourly update noticed it. "
+               "Deadlines skip weekends and the NSE holidays listed in nse_holidays.txt.")
+    f1, f2 = st.columns([1, 2])
+    view = f1.radio("Show", ["Active", "Completed", "All"], horizontal=True)
+    tsel = f2.multiselect("Tracks", ["BEST", "LOW", "HIGH"], default=["BEST", "LOW", "HIGH"])
+    sub = trades[trades.track.isin(tsel)]
+    if view == "Active":
+        sub = sub[sub.status.isin(["PENDING", "OPEN"])]
+    elif view == "Completed":
+        sub = sub[sub.status.isin(["CLOSED", "EXPIRED"])]
+    if sub.empty:
+        st.info("No stocks in this view yet.")
+    else:
+        show_table(summary(sub), money_cols=["P&L"], price_cols=["Buy ₹", "Sell ₹"])
+        for _, r_ in sub.head(40).iterrows():
+            render_card(r_.to_dict())
 
 # ---------------- Tracks ----------------
 with t1:

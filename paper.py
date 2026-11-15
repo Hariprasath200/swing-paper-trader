@@ -1,9 +1,16 @@
 import json
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import yfinance as yf
 from config import *
 from db import conn
 from postmortem import analyze
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+def _ev(c, trade_id, kind, note):
+    c.execute("INSERT INTO events(trade_id, ts, kind, note) VALUES(?,?,?,?)",
+              (trade_id, datetime.now(IST).isoformat(timespec="seconds"), kind, note))
 
 def _flat(df):
     if isinstance(df.columns, pd.MultiIndex):
@@ -19,10 +26,12 @@ def active_symbols():
 
 def add_pending(p, asof):
     with conn() as c:
-        c.execute("INSERT INTO trades(track,symbol,status,created_date,plan_entry,stop,target,qty,features,rationale)"
-                  " VALUES(?,?,?,?,?,?,?,?,?,?)",
-                  (p["track"], p["symbol"], "PENDING", asof, p["entry"], p["stop"], p["target"],
-                   p["qty"], json.dumps(p["features"]), p["rationale"]))
+        cur = c.execute("INSERT INTO trades(track,symbol,status,created_date,plan_entry,stop,target,qty,features,rationale)"
+                        " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (p["track"], p["symbol"], "PENDING", asof, p["entry"], p["stop"], p["target"],
+                         p["qty"], json.dumps(p["features"]), p["rationale"]))
+        _ev(c, cur.lastrowid, "PICKED", f"Picked after market close from {asof} data. Buy limit "
+            f"₹{p['entry']:,.2f}, stop ₹{p['stop']:,.2f}, target ₹{p['target']:,.2f}, qty {p['qty']}.")
 
 def simulate(t, bars, live_date=None):
     """Replay daily bars from scratch (idempotent). If stop and target both sit inside one
@@ -101,6 +110,16 @@ def update_positions(asof, live_date=None):
                       " outcome=:outcome, days_held=:days_held, last_price=:last_price, pnl=:pnl,"
                       " mfe_pct=:mfe_pct, mae_pct=:mae_pct, nifty_ret_pct=:nifty_ret_pct,"
                       " failure_tags=:failure_tags, post_mortem=:post_mortem WHERE id=:id", u)
+            if t["status"] == "PENDING" and u["entry_date"]:
+                _ev(c, t["id"], "FILLED", f"Bought {t['qty']} @ ₹{u['entry']:,.2f} (session {u['entry_date']}).")
+            if u["status"] == "CLOSED":
+                _ev(c, t["id"], u["exit_reason"], f"Sold @ ₹{u['exit_price']:,.2f} (session {u['exit_date']}): "
+                    f"{u['outcome']}, P&L ₹{u['pnl']:,.0f}.")
+            elif u["status"] == "EXPIRED":
+                _ev(c, t["id"], "EXPIRED", f"Buy order not filled within {PENDING_DAYS} sessions; cancelled (no loss).")
+            if u["status"] in ("PENDING", "OPEN") and u["last_price"] is not None:
+                c.execute("INSERT INTO snapshots(trade_id, ts, price) VALUES(?,?,?)",
+                          (t["id"], datetime.now(IST).isoformat(timespec="seconds"), u["last_price"]))
         realized = c.execute("SELECT COALESCE(SUM(pnl),0) FROM trades WHERE status='CLOSED'").fetchone()[0]
         unreal = c.execute("SELECT COALESCE(SUM((last_price-entry)*qty),0) FROM trades "
                            "WHERE status='OPEN' AND last_price IS NOT NULL").fetchone()[0]

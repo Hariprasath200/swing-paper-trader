@@ -1,0 +1,5 @@
+# NSE equity trading holidays on weekdays (YYYY-MM-DD). Used to estimate buy windows and sell-by deadlines.
+# Verify against NSE's official list, and add 2027 dates once NSE publishes them.
+2026-11-10  # Diwali-Balipratipada
+2026-11-24  # Guru Nanak Jayanti
+2026-12-25  # Christmas
