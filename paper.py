@@ -4,6 +4,7 @@ import pandas as pd
 import yfinance as yf
 from config import *
 from db import conn
+from hold_config import DEFAULT_HOLD_DAYS
 from postmortem import analyze
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -26,10 +27,10 @@ def active_symbols():
 
 def add_pending(p, asof):
     with conn() as c:
-        cur = c.execute("INSERT INTO trades(track,symbol,status,created_date,plan_entry,stop,target,qty,features,rationale)"
-                        " VALUES(?,?,?,?,?,?,?,?,?,?)",
+        cur = c.execute("INSERT INTO trades(track,symbol,status,created_date,plan_entry,stop,target,qty,features,rationale,max_hold)"
+                        " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                         (p["track"], p["symbol"], "PENDING", asof, p["entry"], p["stop"], p["target"],
-                         p["qty"], json.dumps(p["features"]), p["rationale"]))
+                         p["qty"], json.dumps(p["features"]), p["rationale"], p.get("max_hold", DEFAULT_HOLD_DAYS)))
         _ev(c, cur.lastrowid, "PICKED", f"Picked after market close from {asof} data. Buy limit "
             f"₹{p['entry']:,.2f}, stop ₹{p['stop']:,.2f}, target ₹{p['target']:,.2f}, qty {p['qty']}.")
 
@@ -40,6 +41,7 @@ def simulate(t, bars, live_date=None):
     day-based events (expiry, 15-day timeout) wait for the finished candle."""
     status, entry, stop, target = "PENDING", t["plan_entry"], t["stop"], t["target"]
     entry_date = exit_date = exit_price = reason = None
+    max_hold = int(t.get("max_hold") or DEFAULT_HOLD_DAYS)       # per-stock time limit
     pend = held = 0
     hi = lo = last = None
     for ts, b in bars.iterrows():
@@ -68,7 +70,7 @@ def simulate(t, bars, live_date=None):
         elif l <= stop:                       exit_price, reason = stop, "STOP"
         elif not filled_now and o >= target:  exit_price, reason = o, "TARGET_GAP"
         elif h >= target:                     exit_price, reason = target, "TARGET"
-        elif held >= MAX_HOLD_DAYS and not partial: exit_price, reason = cl, "TIMEOUT"
+        elif held >= max_hold and not partial: exit_price, reason = cl, "TIMEOUT"
         if reason:
             status, exit_date = "CLOSED", d
             break

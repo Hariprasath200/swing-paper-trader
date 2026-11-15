@@ -8,14 +8,15 @@ def _build(c, track):
     e = round(c["close"] - ENTRY_PULLBACK_ATR * atr, 2)
     stop, target = round(e - STOP_ATR * atr, 2), round(e + TARGET_ATR * atr, 2)
     qty = int(TRADE_AMOUNT // e)
+    hold = int(c.get("hold_days", MAX_HOLD_DAYS))
     if stop <= 0 or qty < 1:
         return None
     feats = dict(c)
     why = (f"Rule-based {track} pick: uptrend (close>SMA20>SMA50), RSI {c['rsi']}, "
            f"volume {c['volume_ratio']}x average, {c['pct_below_20d_high']}% below 20-day high, "
-           f"63-day return {c['ret_63d_pct']}%, ATR {c['atr_pct']}% of price.")
+           f"63-day return {c['ret_63d_pct']}%, ATR {c['atr_pct']}% of price. " + c.get("hold_note", ""))
     return dict(trade=True, track=track, symbol=c["symbol"], entry=e, stop=stop,
-                target=target, qty=qty, features=feats, rationale=why)
+                target=target, qty=qty, max_hold=hold, features=feats, rationale=why)
 
 def pick_three(cands):
     """cands must be sorted by score, best first."""

@@ -1,6 +1,8 @@
+import numpy as np
 import pandas as pd
 import yfinance as yf
 from config import *
+from hold_config import *
 
 def _flat(df):
     if isinstance(df.columns, pd.MultiIndex):
@@ -23,6 +25,40 @@ def market_regime():
     df = _flat(yf.download("^NSEI", period="6mo", progress=False, auto_adjust=True)).dropna()
     c = df.Close
     return bool(c.iloc[-1] > c.rolling(50).mean().iloc[-1]), df.index[-1].strftime("%Y-%m-%d")
+
+def _hold_estimate(df):
+    """Replay THIS buy/stop/target rule over the stock's own history and see how long its
+    winning setups took. Time limit = when 85% of those winners had already hit target."""
+    o, h, l, c = (df[x].to_numpy(float) for x in ("Open", "High", "Low", "Close"))
+    atr = _atr(df).to_numpy(float)
+    n, durs, setups = len(df), [], 0
+    for i in range(20, n - 1 - PENDING_DAYS - HIST_LOOKAHEAD):
+        a = atr[i]
+        if not a > 0:
+            continue
+        entry = c[i] - ENTRY_PULLBACK_ATR * a
+        stop, tgt = entry - STOP_ATR * a, entry + TARGET_ATR * a
+        fill = next((j for j in range(i + 1, i + 1 + PENDING_DAYS) if l[j] <= entry), None)
+        if fill is None:
+            continue
+        setups += 1
+        for k in range(fill, fill + HIST_LOOKAHEAD):
+            if l[k] <= stop:
+                break
+            if h[k] >= tgt:
+                durs.append(k - fill + 1)
+                break
+    if len(durs) >= MIN_HIST_SUCCESS:
+        hold = int(np.ceil(np.percentile(durs, HOLD_PERCENTILE)))
+        hold = max(MIN_HOLD_DAYS, min(MAX_HOLD_CAP, hold))
+        med = float(np.median(durs))
+        note = (f"Time limit {hold} sessions, from this stock's own last year: a similar setup reached target "
+                f"{len(durs)} of {setups} times, typically in {med:.0f} sessions.")
+        return dict(hold_days=hold, hold_basis="history", hist_setups=setups, hist_hits=len(durs),
+                    hist_median_days=round(med, 1), hold_note=note)
+    return dict(hold_days=DEFAULT_HOLD_DAYS, hold_basis="default", hist_setups=setups, hist_hits=len(durs),
+                hist_median_days=None,
+                hold_note=f"Time limit {DEFAULT_HOLD_DAYS} sessions (default: not enough history to estimate this stock's speed).")
 
 def _evaluate(sym, df):
     if len(df) < 70:
@@ -53,7 +89,7 @@ def _evaluate(sym, df):
                 rsi=round(rsi, 1), atr=round(atr, 2), atr_pct=round(atr / last * 100, 2),
                 volume_ratio=round(volr, 2), pct_below_20d_high=round((1 - prox) * 100, 2),
                 ret_63d_pct=round(ret63 * 100, 1), support_10d=round(float(l.tail(10).min()), 2),
-                score=round(score, 2))
+                score=round(score, 2), **_hold_estimate(df))
 
 def scan(symbols, exclude=()):
     rows = []
@@ -62,7 +98,7 @@ def scan(symbols, exclude=()):
     for i in range(0, len(symbols), BATCH):
         batch = [s + ".NS" for s in symbols[i:i + BATCH]]
         try:
-            data = yf.download(batch, period="6mo", group_by="ticker", threads=True,
+            data = yf.download(batch, period="1y", group_by="ticker", threads=True,
                                progress=False, auto_adjust=True)
         except Exception:
             continue

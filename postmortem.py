@@ -41,7 +41,7 @@ def analyze(t, f, nifty_ret):
         notes.append(f"Entered an already-extended stock (63d return {f.get('ret_63d_pct')}%, RSI {f.get('rsi')}).")
     if (f.get("atr_pct") or 0) > 4:
         tags.append("VOLATILE")
-        notes.append(f"Very volatile stock (ATR {f.get('atr_pct')}% of price): wide swings make 15-day targets less reliable.")
+        notes.append(f"Very volatile stock (ATR {f.get('atr_pct')}% of price): wide swings make time-limited targets less reliable.")
     if not tags:
         tags.append("UNCLEAR")
         notes.append("No single obvious cause; likely normal randomness.")

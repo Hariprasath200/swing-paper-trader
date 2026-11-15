@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS trades(
   entry_date TEXT, exit_date TEXT, exit_price REAL, exit_reason TEXT,
   outcome TEXT, days_held INTEGER, last_price REAL, pnl REAL,
   mfe_pct REAL, mae_pct REAL, nifty_ret_pct REAL,
-  features TEXT, rationale TEXT, failure_tags TEXT, post_mortem TEXT);
+  features TEXT, rationale TEXT, failure_tags TEXT, post_mortem TEXT, max_hold INTEGER);
 CREATE TABLE IF NOT EXISTS equity(
   date TEXT PRIMARY KEY, equity REAL, realized REAL, unrealized REAL);
 CREATE TABLE IF NOT EXISTS events(
@@ -25,4 +25,8 @@ def conn():
     c = sqlite3.connect(DB_PATH)
     c.row_factory = sqlite3.Row
     c.executescript(SCHEMA)
+    cols = {r[1] for r in c.execute("PRAGMA table_info(trades)")}
+    if "max_hold" not in cols:                      # older database: add the new column
+        c.execute("ALTER TABLE trades ADD COLUMN max_hold INTEGER")
+        c.commit()
     return c

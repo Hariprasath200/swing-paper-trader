@@ -23,9 +23,9 @@ def buy_window(created):
     """Order is live from the next session until the PENDING_DAYS-th session."""
     return add_td(created, 1), add_td(created, PENDING_DAYS)
 
-def sell_by(entry_date):
-    """Day 1 is the buy session; the MAX_HOLD_DAYS-th session close is the deadline."""
-    return add_td(entry_date, MAX_HOLD_DAYS - 1)
+def sell_by(entry_date, max_hold=None):
+    """Day 1 is the buy session; the max_hold-th session close is the deadline."""
+    return add_td(entry_date, int(max_hold or MAX_HOLD_DAYS) - 1)
 
 def dfmt(s):
     return datetime.strptime(s, "%Y-%m-%d").strftime("%a, %d %b %Y") if s else "–"
