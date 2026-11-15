@@ -10,10 +10,12 @@ from paper import update_positions, add_pending, active_symbols
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-def _save_meta():
+def _save_meta(scan=False):
+    ts = datetime.now(IST).isoformat(timespec="seconds")
     with conn() as c:
-        c.execute("INSERT OR REPLACE INTO meta VALUES('last_update', ?)",
-                  (datetime.now(IST).strftime("%d %b %H:%M IST"),))
+        c.execute("INSERT OR REPLACE INTO meta VALUES('last_update_iso', ?)", (ts,))
+        if scan:
+            c.execute("INSERT OR REPLACE INTO meta VALUES('last_scan_iso', ?)", (ts,))
 
 def main(force=False):
     now = datetime.now(IST)
@@ -44,7 +46,7 @@ def main(force=False):
     with conn() as c:
         c.execute("INSERT INTO scans VALUES(?,?,?,?)",
                   (asof, "OK" if ok else "WEAK", json.dumps(cands), json.dumps(picks)))
-    _save_meta()
+    _save_meta(scan=True)
     for t, p in picks.items():
         print(asof, t, p["symbol"] if p["trade"] else p["reason"])
 

@@ -1,4 +1,5 @@
 import json, subprocess, sys
+from datetime import datetime, timedelta, timezone
 import numpy as np, pandas as pd, streamlit as st
 import plotly.graph_objects as go, plotly.express as px, yfinance as yf
 from config import *
@@ -38,6 +39,18 @@ header[data-testid="stHeader"]{{background:transparent}}
 .stTabs [data-baseweb="tab"]{{background:#111832;border-radius:10px 10px 0 0;padding:8px 16px}}
 .stTabs [aria-selected="true"]{{background:linear-gradient(90deg,#22D3EE33,#A78BFA33)}}
 </style>""", unsafe_allow_html=True)
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+def fmt_ts(iso):
+    """'2026-11-15T14:03:21+05:30' -> ('15 Nov 2026, 02:03 PM IST', '12 min ago', 12)"""
+    try:
+        t = datetime.fromisoformat(iso)
+        mins = max(int((datetime.now(IST) - t).total_seconds() // 60), 0)
+        age = f"{mins} min ago" if mins < 90 else f"{mins // 60} h ago" if mins < 2880 else f"{mins // 1440} days ago"
+        return t.astimezone(IST).strftime("%d %b %Y, %I:%M %p IST"), age, mins
+    except Exception:
+        return None
 
 def chip(text, color):
     return f'<span class="chip" style="background:{color}26;color:{color};border:1px solid {color}66">{text}</span>'
@@ -137,9 +150,12 @@ pill = (f'<span class="pill" style="background:{GREEN}26;color:{GREEN}">● MARK
         else f'<span class="pill" style="background:{GREY}33;color:#cbd5e1">● NO SCAN YET</span>')
 last = scans.iloc[0].date if len(scans) else "–"
 meta = {r[0]: r[1] for r in pd.read_sql("SELECT key, value FROM meta", c).values}
-upd = meta.get("last_update", "–")
+upd, scn = fmt_ts(meta.get("last_update_iso", "")), fmt_ts(meta.get("last_scan_iso", ""))
+upd_html = (f'<b>{upd[0]}</b> <span style="color:{GREEN if upd[2] < 120 else AMBER if upd[2] < 4320 else RED}">({upd[1]})</span>'
+            if upd else "<b>–</b>")
+scn_html = f'<b>{scn[0]}</b> (market data for {last})' if scn else f'<b>{last}</b>' 
 st.markdown(f'<div class="hero"><h1>SwingLab · NSE Paper Trader</h1><p>Finds 3 swing-trade ideas every day, '
-            f'paper-trades them with fake money, and learns from every failure. Last scan: <b>{last}</b> · Positions updated: <b>{upd}</b> &nbsp; {pill}</p></div>',
+            f'paper-trades them with fake money, and learns from every failure. <br>Positions updated: {upd_html}<br>Last full scan: {scn_html} &nbsp; {pill}</p></div>',
             unsafe_allow_html=True)
 
 with st.expander("How to read this dashboard (30 seconds)"):
