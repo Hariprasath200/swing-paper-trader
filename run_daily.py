@@ -22,6 +22,15 @@ def main(force=False):
     before_final = now.time() < time(15, 45)              # today's candle may still be forming
     live_date = now.strftime("%Y-%m-%d") if before_final else None
     market_hours = now.weekday() < 5 and time(9, 15) <= now.time() < time(15, 45)
+    if market_hours and not force:                       # two runs per hour back each other up
+        with conn() as c:
+            row = c.execute("SELECT value FROM meta WHERE key='last_update_iso'").fetchone()
+        try:
+            if row and now - datetime.fromisoformat(row[0]) < timedelta(minutes=40):
+                print(now.strftime("%H:%M"), "positions were updated less than 40 minutes ago; skipping.")
+                return
+        except ValueError:
+            pass
     ok, asof = market_regime()
     update_positions(asof, live_date)                     # 1. fills / stops / targets / post-mortems
     if market_hours and not force:

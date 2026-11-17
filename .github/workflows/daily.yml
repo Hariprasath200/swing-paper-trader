@@ -2,15 +2,17 @@ name: daily-scan
 on:
   schedule:
     # GitHub cron is UTC. IST = UTC + 5:30. Mon-Fri only.
+    # Runs avoid the top of the hour, when GitHub is busiest and drops scheduled jobs most often.
     - cron: "50 3 * * 1-5"     # 09:20 IST  update positions
-    - cron: "30 4-10 * * 1-5"  # 10:00 to 16:00 IST hourly (16:00 also runs the full scan)
-    - cron: "30 11 * * 1-5"    # 17:00 IST backup if the 16:00 scan failed (harmless if already done)
+    - cron: "37 4-10 * * 1-5"  # 10:07 to 16:07 IST hourly (16:07 also runs the full scan)
+    - cron: "7 5-11 * * 1-5"   # 10:37 to 17:07 IST second chance each hour; skips itself if the first run worked
+    - cron: "30 11 * * 1-5"    # 17:00 IST final backup for the daily scan
   workflow_dispatch:
 permissions:
   contents: write
 concurrency:
   group: swinglab
-  cancel-in-progress: false    # runs queue one after another so they never clash on the database
+  cancel-in-progress: false
 jobs:
   run:
     runs-on: ubuntu-latest

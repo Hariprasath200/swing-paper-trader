@@ -1,6 +1,7 @@
 import json, subprocess, sys
 from datetime import datetime, timedelta, timezone
 import numpy as np, pandas as pd, streamlit as st
+import streamlit.components.v1 as components
 import plotly.graph_objects as go, plotly.express as px, yfinance as yf
 from config import *
 from hold_config import MIN_HOLD_DAYS, MAX_HOLD_CAP
@@ -114,6 +115,21 @@ def show_table(df, money_cols=(), price_cols=(), pct_cols=()):
     except Exception:
         st.dataframe(df, hide_index=True)
 
+SLOTS = [(9, 20), (10, 7), (11, 7), (12, 7), (13, 7), (14, 7), (15, 7), (16, 7), (17, 0)]
+
+def next_slot():
+    """Next scheduled GitHub run (IST, weekdays). NSE holidays are not considered."""
+    now = datetime.now(IST)
+    day = now
+    for _ in range(8):
+        if day.weekday() < 5:
+            for h_, m_ in SLOTS:
+                t = day.replace(hour=h_, minute=m_, second=0, microsecond=0)
+                if t > now:
+                    return t.strftime("%a %d %b, %I:%M %p IST")
+        day = (day + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return "–"
+
 # ---------------- data ----------------
 with st.sidebar:
     st.markdown("### Controls")
@@ -131,12 +147,20 @@ with st.sidebar:
     st.caption("Paper trading only. Yahoo Finance data, free.")
 
 c = conn()
+def safe_read(q, cols):
+    try:
+        return pd.read_sql(q, c)
+    except Exception:
+        return pd.DataFrame(columns=cols)
+
 trades = pd.read_sql("SELECT * FROM trades ORDER BY id DESC", c)
-eq = pd.read_sql("SELECT * FROM equity ORDER BY date", c)
-scans = pd.read_sql("SELECT * FROM scans ORDER BY date DESC", c)
-ev = pd.read_sql("SELECT * FROM events ORDER BY ts", c)
-snaps = pd.read_sql("SELECT * FROM snapshots ORDER BY ts", c)
-meta = {r_[0]: r_[1] for r_ in pd.read_sql("SELECT key, value FROM meta", c).values}
+if "max_hold" not in trades.columns:
+    trades["max_hold"] = np.nan
+eq = safe_read("SELECT * FROM equity ORDER BY date", ["date", "equity", "realized", "unrealized"])
+scans = safe_read("SELECT * FROM scans ORDER BY date DESC", ["date", "regime", "candidates", "picks"])
+ev = safe_read("SELECT * FROM events ORDER BY ts", ["id", "trade_id", "ts", "kind", "note"])
+snaps = safe_read("SELECT * FROM snapshots ORDER BY ts", ["id", "trade_id", "ts", "price"])
+meta = {r_[0]: r_[1] for r_ in safe_read("SELECT key, value FROM meta", ["key", "value"]).values}
 for col in ["pnl", "entry", "last_price", "mfe_pct", "mae_pct", "days_held", "max_hold"]:
     trades[col] = pd.to_numeric(trades[col], errors="coerce")
 done = trades[trades.outcome.notna()].copy()
@@ -170,7 +194,17 @@ upd_html = (f'<b>{upd[0]}</b> <span style="color:{GREEN if upd[2] < 120 else AMB
             if upd else "<b>–</b>")
 scn_html = f'<b>{scn[0]}</b> (market data for {latest_scan})' if scn else f'<b>{latest_scan or "–"}</b>'
 st.markdown(f'<div class="hero"><h1>SwingLab · NSE Paper Trader</h1><p>Finds 3 swing-trade ideas every day and paper-trades them '
-            f'with fake money.<br>Positions updated: {upd_html}<br>Last full scan: {scn_html} &nbsp; {pill}</p></div>', unsafe_allow_html=True)
+            f'with fake money.<br>Positions updated (hourly): {upd_html}<br>Last full scan (once a day, after close): {scn_html} &nbsp; {pill}'
+            f'<br>Next scheduled update: <b>{next_slot()}</b> <span style="font-size:.75rem">(GitHub can start a few minutes late)</span></p></div>', unsafe_allow_html=True)
+
+_RELOAD_JS = "<script>setTimeout(function(){window.parent.location.reload();}, 900000);</script>"
+try:   # reload the page every 15 minutes so new hourly data appears without pressing refresh
+    if hasattr(st, "iframe"):
+        st.iframe(_RELOAD_JS, height=1)
+    else:
+        components.html(_RELOAD_JS, height=0)
+except Exception:
+    pass
 
 with st.expander("How to read this dashboard (30 seconds)"):
     st.markdown(f"""
@@ -431,15 +465,23 @@ with tab_stocks:
         sub = sub[sub.status.isin(["PENDING", "OPEN"])]
     elif view == "Completed":
         sub = sub[sub.status.isin(["CLOSED", "EXPIRED"])]
-    sub["_o"] = sub.status.map({"OPEN": 0, "PENDING": 1, "CLOSED": 2, "EXPIRED": 3})
-    sub = sub.sort_values(["_o", "id"], ascending=[True, False])
+    sub["_t"] = sub.track.map({"BEST": 0, "LOW": 1, "HIGH": 2})
+    sub = sub.sort_values(["created_date", "_t"], ascending=[False, True])
     if sub.empty:
         st.info("No stocks in this view yet. They appear after the first scan.")
     else:
-        st.caption(f"{len(sub)} stock{'s' if len(sub) != 1 else ''}. Tap **Details** on any stock for the full plan.")
-        show_all = st.checkbox("Show all", value=False) if len(sub) > 20 else True
-        for _, r_ in (sub if show_all else sub.head(20)).iterrows():
-            stock_row(r_.to_dict(), latest_scan)
+        days = list(dict.fromkeys(sub.created_date))
+        st.caption(f"{len(sub)} stock{'s' if len(sub) != 1 else ''} over {len(days)} day{'s' if len(days) != 1 else ''}, "
+                   "newest first. Tap **Details** on any stock for the full plan.")
+        show_all = st.checkbox("Show all days", value=False) if len(days) > 7 else True
+        for i, dday in enumerate(days if show_all else days[:7]):
+            g = sub[sub.created_date == dday]
+            counts = g.apply(lambda x: status_of(x.to_dict())[0], axis=1).value_counts()
+            summ = " · ".join(f"{v} {k.lower()}" for k, v in counts.items())
+            tag = " (latest scan)" if dday == latest_scan else ""
+            with st.expander(f"{dfmt(dday)}{tag} — {len(g)} pick{'s' if len(g) != 1 else ''}: {summ}", expanded=(i < 2)):
+                for _, r_ in g.iterrows():
+                    stock_row(r_.to_dict(), latest_scan)
     if len(scans):
         cands = json.loads(scans.iloc[0].candidates)
         if cands:
